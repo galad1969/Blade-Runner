@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Barlow Condensed", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    background-color: #07090d;
+    color: #f1f5f9;
+    scroll-behavior: smooth;
+  }
+
+  /* Retro-industrial fine hairline scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #090c12;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #232b3b;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #f59e0b;
+  }
+}
+
+/* Subtle Blade Runner architectural grid backdrop — ultra low contrast to preserve text legibility */
+.br-grid-backdrop {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* Restrained neon rim illumination for active search bar and primary focus */
+.br-amber-glow {
+  box-shadow:
+    0 0 0 1px rgba(245, 158, 11, 0.45),
+    0 0 24px -6px rgba(245, 158, 11, 0.22);
+}
+
+.br-cyan-glow {
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.4),
+    0 0 20px -6px rgba(34, 211, 238, 0.18);
+}
+
+/* Precision retro-industrial corner notch accent */
+.br-notch-panel {
+  position: relative;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

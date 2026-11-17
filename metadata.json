@@ -1,0 +1,6 @@
+{
+  "name": "CODEX VECTEUR — Moteur de Recherche Réglementaire",
+  "description": "Moteur de recherche vectoriel statique permettant d'interroger un document de règles en français et d'obtenir les réponses les plus pertinentes avec exemples et indice de concordance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
