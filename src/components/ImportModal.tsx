@@ -8,26 +8,15 @@ interface ImportModalProps {
   onImportDocument: (title: string, subtitle: string, rawText: string) => void;
 }
 
-const TEMPLATE_SNIPPET = `# Section 1 — Dispositions générales
-
-### Art. 1.1 — Principe de priorité
-Lorsqu’une règle spécifique contredit une règle générale, la règle spécifique s’applique toujours en priorité.
-
-Exemple : La règle générale interdit d’agir deux fois, mais la carte « Réflexe » autorise une seconde action gratuite. La carte s’applique.
-
-### Art. 1.2 — Validation et délais
-Toute demande doit être soumise par écrit avant l’expiration du délai de 48 heures.
-
-Exemple : Un incident constaté le lundi à 10h00 doit être signalé au plus tard le mercredi à 10h00.`;
-
 export const ImportModal: React.FC<ImportModalProps> = ({
   isOpen,
   onClose,
   onImportDocument,
 }) => {
-  const [title, setTitle] = useState('Mon Document Réglementaire');
-  const [subtitle, setSubtitle] = useState('Document source personnalisé importé localement');
+  const [title, setTitle] = useState('');
+  const [subtitle, setSubtitle] = useState('');
   const [rawText, setRawText] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -52,9 +41,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const loadFile = (file: File) => {
     setErrorMsg(null);
     const reader = new FileReader();
     reader.onload = () => {
@@ -65,12 +52,28 @@ export const ImportModal: React.FC<ImportModalProps> = ({
       }
       setRawText(content);
       const cleanName = file.name.replace(/\.(md|txt)$/i, '');
-      if (cleanName) setTitle(cleanName);
+      if (cleanName && !title.trim()) {
+        setTitle(cleanName);
+      } else if (cleanName) {
+        setTitle(cleanName);
+      }
     };
     reader.onerror = () => {
       setErrorMsg('Impossible de lire le fichier sélectionné.');
     };
     reader.readAsText(file, 'utf-8');
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) loadFile(file);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) loadFile(file);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -79,11 +82,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({
       setErrorMsg('Veuillez saisir un titre pour le document.');
       return;
     }
-    if (rawText.trim().length < 30) {
-      setErrorMsg('Veuillez coller ou charger un texte réglementaire d’au moins 30 caractères.');
+    if (rawText.trim().length < 20) {
+      setErrorMsg('Veuillez coller ou charger un texte d’au moins 20 caractères.');
       return;
     }
-    onImportDocument(title.trim(), subtitle.trim() || 'Document source importé', rawText);
+    onImportDocument(
+      title.trim(),
+      subtitle.trim() || 'Document source personnel',
+      rawText
+    );
+    setTitle('');
+    setSubtitle('');
+    setRawText('');
     onClose();
   };
 
@@ -118,11 +128,23 @@ export const ImportModal: React.FC<ImportModalProps> = ({
 
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5">
           {/* File drop / picker */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#080B10] border border-dashed border-white/[0.14] p-4">
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#080B10] border border-dashed p-4 transition-colors ${
+              isDragging ? 'border-amber-400 bg-amber-500/5' : 'border-white/[0.16]'
+            }`}
+          >
             <div className="text-xs text-slate-300">
-              <p className="font-medium text-slate-100">Charger un fichier texte (.txt, .md)</p>
+              <p className="font-medium text-slate-100">
+                Déposer ou choisir un fichier (.txt, .md)
+              </p>
               <p className="text-slate-400 mt-0.5">
-                Traitement 100 % local : aucun texte n’est envoyé sur un serveur.
+                Indexation 100 % locale dans votre navigateur.
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -153,18 +175,20 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full bg-[#080B10] border border-white/[0.1] focus:border-amber-400/70 focus:outline-none px-3 py-2 text-sm text-slate-100"
+                placeholder="Ex : Règlement officiel"
+                className="w-full bg-[#080B10] border border-white/[0.1] focus:border-amber-400/70 focus:outline-none px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600"
               />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                Description courte
+                Description (optionnelle)
               </label>
               <input
                 type="text"
                 value={subtitle}
                 onChange={(e) => setSubtitle(e.target.value)}
-                className="w-full bg-[#080B10] border border-white/[0.1] focus:border-amber-400/70 focus:outline-none px-3 py-2 text-sm text-slate-100"
+                placeholder="Ex : Édition 2026"
+                className="w-full bg-[#080B10] border border-white/[0.1] focus:border-amber-400/70 focus:outline-none px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600"
               />
             </div>
           </div>
@@ -172,15 +196,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-medium text-slate-300">
-                Contenu du document de règles
+                Contenu du document
               </label>
-              <button
-                type="button"
-                onClick={() => setRawText(TEMPLATE_SNIPPET)}
-                className="text-xs text-cyan-300 hover:text-cyan-200 transition-colors cursor-pointer"
-              >
-                Insérer un modèle structuré
-              </button>
+              {rawText.trim() && (
+                <span className="font-mono text-xs text-amber-400 tabular-nums">
+                  {previewChunks.length} articles · {exampleCount} exemples détectés
+                </span>
+              )}
             </div>
             <textarea
               rows={8}
@@ -189,20 +211,14 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                 setRawText(e.target.value);
                 setErrorMsg(null);
               }}
-              placeholder="Collez ici le texte de votre règlement (titres avec ### Art. X.Y — Titre, et paragraphes commençant par Exemple : ...)"
+              placeholder="Collez ici le texte de votre document source (titres Markdown # / ### ou paragraphes séparés par des lignes vides)..."
               className="w-full bg-[#080B10] border border-white/[0.1] focus:border-amber-400/70 focus:outline-none p-3 font-mono text-xs leading-relaxed text-slate-200 placeholder:text-slate-600"
             />
-            <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
-              <span>
-                Format conseillé : <code className="text-slate-300">### Art. 1 — Titre</code> et{' '}
-                <code className="text-slate-300">Exemple : ...</code>
-              </span>
-              {rawText.trim() && (
-                <span className="font-mono text-amber-400 tabular-nums">
-                  {previewChunks.length} articles · {exampleCount} exemples détectés
-                </span>
-              )}
-            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Les sections précédées de <code className="text-slate-300">###</code> ou{' '}
+              <code className="text-slate-300">Article X —</code> et les blocs{' '}
+              <code className="text-slate-300">Exemple :</code> sont automatiquement structurés.
+            </p>
           </div>
 
           {errorMsg && (

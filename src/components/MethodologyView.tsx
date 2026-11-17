@@ -3,7 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import { VectorIndex } from '../engine/vectorSearch';
 
 interface MethodologyViewProps {
-  index: VectorIndex;
+  index: VectorIndex | null;
   onBackToSearch: () => void;
 }
 
@@ -28,7 +28,7 @@ export const MethodologyView: React.FC<MethodologyViewProps> = ({
       <p className="mt-3 text-base text-slate-300 leading-relaxed max-w-prose">
         L’ensemble de l’indexation et du calcul de similarité cosinus s’exécute localement
         dans votre navigateur, sans serveur externe ni latence réseau. Chaque point de règle
-        du document source est projeté dans un espace vectoriel multi-dimensionnel.
+        du document importé est projeté dans un espace vectoriel multi-dimensionnel.
       </p>
 
       {/* Real Index Snapshot */}
@@ -36,25 +36,25 @@ export const MethodologyView: React.FC<MethodologyViewProps> = ({
         <div>
           <p className="text-xs text-slate-400">Articles indexés</p>
           <p className="mt-1 font-mono text-2xl font-semibold text-slate-50 tabular-nums">
-            {index.chunks.length}
+            {index ? index.chunks.length : '—'}
           </p>
         </div>
         <div>
           <p className="text-xs text-slate-400">Vocabulaire (racines)</p>
           <p className="mt-1 font-mono text-2xl font-semibold text-amber-400 tabular-nums">
-            {index.vocabSize}
+            {index ? index.vocabSize : '—'}
           </p>
         </div>
         <div>
           <p className="text-xs text-slate-400">Dimensions conceptuelles</p>
           <p className="mt-1 font-mono text-2xl font-semibold text-cyan-300 tabular-nums">
-            {index.conceptDimensionCount}
+            {index ? index.conceptDimensionCount : 20}
           </p>
         </div>
         <div>
           <p className="text-xs text-slate-400">Temps d’indexation</p>
           <p className="mt-1 font-mono text-2xl font-semibold text-slate-50 tabular-nums">
-            {index.indexedAtMs} ms
+            {index ? `${index.indexedAtMs} ms` : '—'}
           </p>
         </div>
       </div>
@@ -88,9 +88,9 @@ export const MethodologyView: React.FC<MethodologyViewProps> = ({
               <span className="font-mono text-xs text-slate-400 tabular-nums">Poids 24 %</span>
             </div>
             <p className="text-sm text-slate-300 leading-relaxed">
-              Projection dense sur {index.conceptDimensionCount} axes thématiques réglementaires
-              (déplacement, ligne de vue, sanctions, priorité des règles, départage…). Permet
-              de relier des synonymes comme « bouger » et « déplacement ».
+              Projection dense sur {index ? index.conceptDimensionCount : 20} axes thématiques
+              réglementaires (déplacement, ligne de vue, sanctions, priorité des règles,
+              départage…). Permet de relier des synonymes comme « bouger » et « déplacement ».
             </p>
           </div>
 

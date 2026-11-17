@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Search } from 'lucide-react';
+import { ArrowLeft, FileUp, Search } from 'lucide-react';
 import { RuleChunk } from '../engine/vectorSearch';
 
 interface DocumentSourceViewProps {
-  docTitle: string;
-  docSubtitle: string;
+  docTitle: string | null;
+  docSubtitle: string | null;
   chunks: RuleChunk[];
   highlightedChunkId: string | null;
   onBackToSearch: () => void;
@@ -30,6 +30,39 @@ export const DocumentSourceView: React.FC<DocumentSourceViewProps> = ({
     }
   }, [highlightedChunkId]);
 
+  if (!docTitle || chunks.length === 0) {
+    return (
+      <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-14">
+        <button
+          type="button"
+          onClick={onBackToSearch}
+          className="inline-flex items-center gap-2 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors mb-8 cursor-pointer"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          <span>Retour au moteur de recherche</span>
+        </button>
+
+        <div className="bg-[#0C1018] border border-white/[0.1] p-10 text-center">
+          <h1 className="font-display text-3xl font-semibold text-slate-50">
+            Aucun document source chargé
+          </h1>
+          <p className="mt-2.5 text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
+            Importez un fichier (.txt, .md) ou collez votre document personnel pour le lire et
+            l’interroger.
+          </p>
+          <button
+            type="button"
+            onClick={onOpenImport}
+            className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-[#07090D] transition-colors cursor-pointer"
+          >
+            <FileUp className="w-3.5 h-3.5" />
+            <span>Importer un document</span>
+          </button>
+        </div>
+      </section>
+    );
+  }
+
   const filteredChunks = chunks.filter((chunk) => {
     if (!filterText.trim()) return true;
     const q = filterText.toLowerCase();
@@ -42,7 +75,6 @@ export const DocumentSourceView: React.FC<DocumentSourceViewProps> = ({
     );
   });
 
-  // Group sections for TOC
   const sections = Array.from(new Set(chunks.map((c) => c.section)));
 
   return (
@@ -82,7 +114,7 @@ export const DocumentSourceView: React.FC<DocumentSourceViewProps> = ({
             onClick={onOpenImport}
             className="px-4 py-2 text-xs font-medium bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
-            Remplacer le texte
+            Importer un autre texte
           </button>
         </div>
       </div>
