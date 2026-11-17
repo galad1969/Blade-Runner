@@ -6,7 +6,9 @@ import { HighlightedText } from './HighlightedText';
 interface ResultCardProps {
   result: SearchResult;
   rank: number;
+  availablePages?: Set<number>;
   onInspectSource: (chunkId: string) => void;
+  onJumpToPage?: (pageNum: number) => void;
 }
 
 function getConcordanceLabel(score: number): {
@@ -38,10 +40,20 @@ function getConcordanceLabel(score: number): {
 export const ResultCard: React.FC<ResultCardProps> = ({
   result,
   rank,
+  availablePages,
   onInspectSource,
+  onJumpToPage,
 }) => {
   const [showVectorDetails, setShowVectorDetails] = useState(false);
-  const { chunk, concordance, rawCosine, breakdown, matchedTerms, matchedConcepts } = result;
+  const {
+    chunk,
+    concordance,
+    rawCosine,
+    breakdown,
+    matchedTerms,
+    matchedConcepts,
+    exactPhrasesMatched,
+  } = result;
   const status = getConcordanceLabel(concordance);
   const formattedScore = concordance.toFixed(1).replace('.', ',');
 
@@ -63,6 +75,14 @@ export const ResultCard: React.FC<ResultCardProps> = ({
           <span className="font-mono text-slate-200">{chunk.articleCode}</span>
           <span aria-hidden="true">·</span>
           <span className="text-slate-400">{chunk.section}</span>
+          {exactPhrasesMatched && exactPhrasesMatched.length > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="text-cyan-300 font-medium">
+                Expression exacte
+              </span>
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-4 shrink-0">
@@ -92,7 +112,12 @@ export const ResultCard: React.FC<ResultCardProps> = ({
 
       {/* Core Rule Body */}
       <div className="mt-3 text-[15px] leading-[1.7] text-slate-200 max-w-prose whitespace-pre-line">
-        <HighlightedText text={chunk.ruleText} matchedTerms={matchedTerms} />
+        <HighlightedText
+          text={chunk.ruleText}
+          matchedTerms={matchedTerms}
+          availablePages={availablePages}
+          onJumpToPage={onJumpToPage}
+        />
       </div>
 
       {/* Examples extracted from source document */}
@@ -104,7 +129,12 @@ export const ResultCard: React.FC<ResultCardProps> = ({
           <div className="space-y-2.5 text-sm leading-relaxed text-slate-300 max-w-prose">
             {chunk.examples.map((ex, i) => (
               <p key={i}>
-                <HighlightedText text={ex} matchedTerms={matchedTerms} />
+                <HighlightedText
+                  text={ex}
+                  matchedTerms={matchedTerms}
+                  availablePages={availablePages}
+                  onJumpToPage={onJumpToPage}
+                />
               </p>
             ))}
           </div>
@@ -178,7 +208,9 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             <div>
               <span className="text-slate-400 block mb-1">Termes alignés :</span>
               <span className="text-cyan-300 font-mono leading-relaxed">
-                {matchedTerms.length > 0 ? matchedTerms.join(' · ') : 'Correspondance sémantique / sous-mots'}
+                {matchedTerms.length > 0
+                  ? matchedTerms.join(' · ')
+                  : 'Correspondance sémantique / sous-mots'}
               </span>
             </div>
             {matchedConcepts.length > 0 && (

@@ -9,7 +9,9 @@ interface SourcePreviewModalProps {
   chunks: RuleChunk[];
   activeChunkId: string | null;
   matchedTerms: string[];
+  availablePages?: Set<number>;
   onSelectChunkId: (chunkId: string) => void;
+  onJumpToPage?: (pageNum: number) => void;
   onOpenInDocumentTab: (chunkId: string) => void;
   onClose: () => void;
 }
@@ -20,7 +22,9 @@ export const SourcePreviewModal: React.FC<SourcePreviewModalProps> = ({
   chunks,
   activeChunkId,
   matchedTerms,
+  availablePages,
   onSelectChunkId,
+  onJumpToPage,
   onOpenInDocumentTab,
   onClose,
 }) => {
@@ -70,6 +74,14 @@ export const SourcePreviewModal: React.FC<SourcePreviewModalProps> = ({
               </span>
               <span aria-hidden="true">·</span>
               <span className="font-mono text-amber-400">{currentChunk.articleCode}</span>
+              {currentChunk.pageNumber && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono text-cyan-300">
+                    Page {currentChunk.pageNumber}
+                  </span>
+                </>
+              )}
               <span aria-hidden="true">·</span>
               <span className="font-mono tabular-nums text-slate-500">
                 {currentIndex + 1} / {chunks.length}
@@ -102,7 +114,12 @@ export const SourcePreviewModal: React.FC<SourcePreviewModalProps> = ({
             </h2>
 
             <div className="mt-4 text-[15px] leading-[1.75] text-slate-100 max-w-prose whitespace-pre-line">
-              <HighlightedText text={currentChunk.ruleText} matchedTerms={matchedTerms} />
+              <HighlightedText
+                text={currentChunk.ruleText}
+                matchedTerms={matchedTerms}
+                availablePages={availablePages}
+                onJumpToPage={onJumpToPage}
+              />
             </div>
 
             {currentChunk.examples.length > 0 && (
@@ -113,7 +130,12 @@ export const SourcePreviewModal: React.FC<SourcePreviewModalProps> = ({
                 <div className="space-y-2.5 text-sm leading-relaxed text-slate-300 max-w-prose">
                   {currentChunk.examples.map((ex, i) => (
                     <p key={i}>
-                      <HighlightedText text={ex} matchedTerms={matchedTerms} />
+                      <HighlightedText
+                        text={ex}
+                        matchedTerms={matchedTerms}
+                        availablePages={availablePages}
+                        onJumpToPage={onJumpToPage}
+                      />
                     </p>
                   ))}
                 </div>

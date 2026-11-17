@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import {
   buildVectorIndex,
+  parseQueryPhrases,
   parseRuleDocument,
   searchVectorIndex,
 } from './engine/vectorSearch';
@@ -30,6 +31,10 @@ import { ImportedDocPayload, ImportModal } from './components/ImportModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SourcePreviewModal } from './components/SourcePreviewModal';
+import {
+  SectionFilterDropdown,
+  SectionOption,
+} from './components/SectionFilterDropdown';
 
 type ActiveView = 'search' | 'source' | 'methodology';
 
@@ -40,6 +45,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<ActiveView>('search');
 
   const [query, setQuery] = useState<string>('');
+  const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [minThreshold, setMinThreshold] = useState<number>(15);
   const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
   const [popupChunkId, setPopupChunkId] = useState<string | null>(null);
@@ -87,11 +93,18 @@ export default function App() {
 
   const results = useMemo(() => {
     if (!vectorIndex || !query.trim()) return [];
-    return searchVectorIndex(vectorIndex, query, minThreshold, 8);
-  }, [vectorIndex, query, minThreshold]);
+    return searchVectorIndex(
+      vectorIndex,
+      query,
+      minThreshold,
+      8,
+      selectedSections
+    );
+  }, [vectorIndex, query, minThreshold, selectedSections]);
 
   const handleSelectDocument = (docId: string) => {
     setActiveDocId(docId);
+    setSelectedSections([]);
     setHighlightedChunkId(null);
     setUploadError(null);
   };
@@ -102,6 +115,7 @@ export default function App() {
       const remaining = prev.filter((d) => d.id !== docId);
       if (activeDocId === docId) {
         setActiveDocId(remaining.length > 0 ? remaining[0].id : null);
+        setSelectedSections([]);
         setHighlightedChunkId(null);
         setQuery('');
       }
@@ -115,9 +129,34 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const availablePages = useMemo(() => {
+    const pages = new Set<number>();
+    if (!vectorIndex) return pages;
+    for (const item of vectorIndex.chunks) {
+      if (item.chunk.pageNumber) pages.add(item.chunk.pageNumber);
+    }
+    return pages;
+  }, [vectorIndex]);
+
+  const activeQueryPhrases = useMemo(
+    () => parseQueryPhrases(query).exactPhrases,
+    [query]
+  );
+
   const handleOpenSourcePopup = (chunkId: string, matchedTerms: string[]) => {
     setPopupChunkId(chunkId);
     setPopupMatchedTerms(matchedTerms);
+  };
+
+  const handleJumpToPage = (pageNum: number) => {
+    if (!vectorIndex) return;
+    const target = vectorIndex.chunks.find(
+      (item) => item.chunk.pageNumber === pageNum
+    );
+    if (target) {
+      setPopupChunkId(target.chunk.id);
+      setPopupMatchedTerms([]);
+    }
   };
 
   const handleImportDocument = async (payload: ImportedDocPayload) => {
@@ -136,6 +175,7 @@ export default function App() {
     await saveDocument(newDoc, payload.fileHandle);
     setDocuments((prev) => [...prev, newDoc]);
     setActiveDocId(newId);
+    setSelectedSections([]);
     setQuery('');
     setHighlightedChunkId(null);
     setUploadError(null);
@@ -299,6 +339,14 @@ export default function App() {
     if (!vectorIndex) return [];
     return Array.from(new Set(vectorIndex.chunks.map((c) => c.chunk.section)));
   }, [vectorIndex]);
+
+  const sectionOptions: SectionOption[] = useMemo(() => {
+    if (!vectorIndex) return [];
+    return sectionsList.map((sec) => ({
+      name: sec,
+      count: vectorIndex.chunks.filter((c) => c.chunk.section === sec).length,
+    }));
+  }, [vectorIndex, sectionsList]);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#07090D] text-slate-100 br-grid-backdrop">
@@ -617,6 +665,24 @@ export default function App() {
                       Rechercher
                     </button>
                   </div>
+
+                  {/* Section Filter Dropdown + Query Syntax Tip */}
+                  <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    {sectionOptions.length > 1 && (
+                      <SectionFilterDropdown
+                        sections={sectionOptions}
+                        selectedSections={selectedSections}
+                        onChangeSelectedSections={setSelectedSections}
+                      />
+                    )}
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Astuce : séparez des thèmes par des{' '}
+                      <span className="font-mono text-slate-400">virgules</span>, utilisez{' '}
+                      <span className="font-mono text-slate-400">"guillemets"</span> pour
+                      une expression exacte, ou des dés (<span className="font-mono text-slate-400">2d6</span>,{' '}
+                      <span className="font-mono text-slate-400">DD 15</span>).
+                    </p>
+                  </div>
                 </form>
 
                 {/* Document Structure Overview or Search Results */}
@@ -695,15 +761,26 @@ export default function App() {
                     {results.length === 0 ? (
                       <div className="mt-6 bg-[#0C1018] border border-white/[0.08] p-7 sm:p-8 text-center">
                         <p className="font-display text-2xl font-semibold text-slate-100">
-                          Aucune correspondance suffisante
+                          {activeQueryPhrases.length > 0
+                            ? 'Aucune occurrence exacte trouvée'
+                            : 'Aucune correspondance suffisante'}
                         </p>
                         <p className="mt-2 text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
-                          Aucun article de « {activeDoc.title} » n’atteint {minThreshold} % de
-                          concordance pour cette requête. Reformulez avec d’autres termes ou
-                          abaissez le seuil minimal.
+                          {activeQueryPhrases.length > 0
+                            ? `L’expression exacte « ${activeQueryPhrases.join(' », « ')} » n’apparaît pas dans « ${activeDoc.title} ». Essayez sans guillemets pour élargir au moteur vectoriel.`
+                            : `Aucun article de « ${activeDoc.title} » n’atteint ${minThreshold} % de concordance pour cette requête. Reformulez avec d’autres termes ou abaissez le seuil minimal.`}
                         </p>
                         <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-                          {minThreshold > 5 && (
+                          {selectedSections.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSections([])}
+                              className="min-h-[44px] px-4 py-2 text-xs font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 transition-colors cursor-pointer"
+                            >
+                              Chercher dans toutes les sections
+                            </button>
+                          )}
+                          {minThreshold > 5 && activeQueryPhrases.length === 0 && (
                             <button
                               type="button"
                               onClick={() => setMinThreshold(5)}
@@ -728,9 +805,11 @@ export default function App() {
                             key={result.chunk.id}
                             result={result}
                             rank={idx + 1}
+                            availablePages={availablePages}
                             onInspectSource={(chunkId) =>
                               handleOpenSourcePopup(chunkId, result.matchedTerms)
                             }
+                            onJumpToPage={handleJumpToPage}
                           />
                         ))}
                       </div>
@@ -840,7 +919,9 @@ export default function App() {
         chunks={vectorIndex ? vectorIndex.chunks.map((c) => c.chunk) : []}
         activeChunkId={popupChunkId}
         matchedTerms={popupMatchedTerms}
+        availablePages={availablePages}
         onSelectChunkId={(chunkId) => setPopupChunkId(chunkId)}
+        onJumpToPage={handleJumpToPage}
         onOpenInDocumentTab={handleInspectSource}
         onClose={() => setPopupChunkId(null)}
       />

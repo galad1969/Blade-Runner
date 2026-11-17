@@ -8,6 +8,7 @@ export interface RuleChunk {
   examples: string[];
   rawBlock: string;
   order: number;
+  pageNumber?: number;
 }
 
 export interface SparseVector {
@@ -22,6 +23,7 @@ export interface IndexedChunk {
   conceptVec: number[];
   surfaceTokens: string[];
   stemToSurface: Map<string, string[]>;
+  normalizedSearchBlob: string;
 }
 
 export interface VectorIndex {
@@ -49,6 +51,7 @@ export interface SearchResult {
   breakdown: SearchBreakdown;
   matchedTerms: string[];
   matchedConcepts: string[];
+  exactPhrasesMatched: string[];
 }
 
 const FRENCH_STOPWORDS = new Set([
@@ -67,113 +70,149 @@ const FRENCH_STOPWORDS = new Set([
   'aucune', 'cas', 'règle', 'regle', 'règles', 'regles', 'point', 'article', 'section',
 ]);
 
+// Important 2-letter JDR acronyms & dice prefixes that must NEVER be filtered out
+const KEEP_SHORT_TOKENS = new Set([
+  'pv', 'dd', 'ca', 'pa', 'pm', 'pe', 'pf', 'mj', 'pj', 'xp', 'px', 'pc', 'po',
+  'd4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100', 'san', 'js', 'cc', 'ct',
+]);
+
 interface SemanticConcept {
   id: string;
   label: string;
   roots: string[];
 }
 
-// 24 latent French semantic concept dimensions tailored to rules, games, sports & regulations
+// Latent French semantic concept dimensions (general rules + specialized tabletop RPG / JDR lexicon & VO terms)
 const SEMANTIC_CONCEPTS: SemanticConcept[] = [
   {
+    id: 'jdr_tests_dice',
+    label: 'JDR · Tests, Jets & Difficulté',
+    roots: [
+      'test', 'jet', 'competenc', 'caracteristiqu', 'attribut', 'dd', 'seuil', 'difficult',
+      'reussit', 'echec', 'critiqu', 'maladress', 'fumbl', 'avantag', 'desavantag',
+      'relanc', 'forc', 'push', 'pouss', 'oppos', 'sauvegard', 'saving', 'throw',
+      'modificateur', 'bonus', 'malus', 'de', 'des', 'lancer', 'resultat', 'marge',
+    ],
+  },
+  {
+    id: 'jdr_combat_actions',
+    label: 'JDR · Combat, Actions & Opportunité',
+    roots: [
+      'combat', 'attaqu', 'action', 'gratu', 'react', 'opportunit', 'initiativ',
+      'surpris', 'embuscad', 'round', 'tour', 'desengag', 'esquiv', 'par', 'ripost',
+      'lutt', 'agripp', 'grappl', 'bouscul', 'renvers', 'feint', 'vis', 'mele', 'corps',
+      'touch', 'degat', 'critiqu', 'flanqu', 'charge', 'allong', 'deux', 'arm',
+    ],
+  },
+  {
+    id: 'jdr_conditions',
+    label: 'JDR · États & Conditions',
+    roots: [
+      'etat', 'condition', 'terr', 'prone', 'etourdi', 'stun', 'aveugl', 'blind',
+      'assourd', 'entrav', 'paraly', 'empoison', 'effray', 'peur', 'charm', 'invisibl',
+      'inconscient', 'epuis', 'fatigu', 'ralenti', 'immobilis', 'neutralis', 'statut',
+    ],
+  },
+  {
+    id: 'jdr_health_stress',
+    label: 'JDR · Santé, Mort & Stress',
+    roots: [
+      'pv', 'vie', 'bless', 'grav', 'agoni', 'mourant', 'mort', 'stabilis', 'soin',
+      'gueris', 'repos', 'court', 'long', 'recuper', 'stress', 'paniqu', 'foli',
+      'mental', 'san', 'traumat', 'humanit', 'cyberpsychos', 'seuil', 'contre',
+    ],
+  },
+  {
+    id: 'jdr_magic_tech',
+    label: 'JDR · Magie, Pouvoirs & Cybernétique',
+    roots: [
+      'sort', 'magi', 'incant', 'emplac', 'niveau', 'mana', 'psi', 'pouvoir',
+      'concentr', 'rituel', 'composant', 'port', 'zon', 'con', 'spher', 'ray',
+      'dissip', 'contresort', 'implant', 'cybernetiqu', 'pirat', 'netrun', 'iem', 'surcharg',
+    ],
+  },
+  {
+    id: 'jdr_stealth_vision',
+    label: 'JDR · Discrétion, Vision & Couvert',
+    roots: [
+      'discret', 'furtiv', 'stealth', 'cach', 'percept', 'detect', 'observ', 'lumier',
+      'obscur', 'penombr', 'tenebr', 'vision', 'nocturn', 'infravision', 'lign', 'vue',
+      'visibl', 'couvert', 'abri', 'obstacl', 'ombr', 'brouillard', 'dissimul',
+    ],
+  },
+  {
+    id: 'jdr_gear_encumbrance',
+    label: 'JDR · Équipement, Armures & Encombrement',
+    roots: [
+      'equip', 'inventair', 'encombr', 'charg', 'poid', 'forc', 'munit', 'recharg',
+      'cadenc', 'rafal', 'armur', 'ca', 'protect', 'boucli', 'repar', 'artisan',
+      'prix', 'credit', 'piec', 'objet', 'magiqu', 'harmon', 'port', 'degat',
+    ],
+  },
+  {
     id: 'movement',
-    label: 'Déplacement & Distance',
-    roots: ['deplac', 'mouv', 'boug', 'avanc', 'recul', 'distanc', 'cas', 'metr', 'pas', 'trajet', 'vites', 'sprint', 'cour', 'franch', 'terrain', 'chut', 'saut', 'escalad', 'grimp'],
-  },
-  {
-    id: 'turn_order',
-    label: 'Tour de jeu & Initiative',
-    roots: ['tour', 'round', 'manch', 'phas', 'initiativ', 'ordr', 'activ', 'sequenc', 'chronolog', 'debut', 'commenc', 'simultane', 'altern'],
-  },
-  {
-    id: 'action_points',
-    label: 'Actions & Coût',
-    roots: ['action', 'pa', 'cout', 'depens', 'gratuit', 'react', 'hors', 'interrupt', 'repons', 'reserv', 'utilis', 'effectu'],
-  },
-  {
-    id: 'vision_cover',
-    label: 'Ligne de vue & Couvert',
-    roots: ['lign', 'vue', 'visibl', 'visibil', 'voir', 'regard', 'couvert', 'abri', 'obstacl', 'mur', 'ombr', 'brouillard', 'dissimul', 'cach', 'angle'],
-  },
-  {
-    id: 'ranged_combat',
-    label: 'Tir & Portée',
-    roots: ['tir', 'arm', 'porte', 'ball', 'projectil', 'dispers', 'vis', 'cibl', 'mun', 'recharg', 'rafal', 'precis', 'touche'],
-  },
-  {
-    id: 'melee_combat',
-    label: 'Corps-à-corps & Riposte',
-    roots: ['corps', 'mele', 'contact', 'engag', 'desengag', 'ripost', 'par', 'esquiv', 'frapp', 'combat', 'duel', 'adjac'],
-  },
-  {
-    id: 'damage_status',
-    label: 'Dégâts & États',
-    roots: ['degat', 'bless', 'pv', 'vie', 'mort', 'neutralis', 'elimin', 'surcharg', 'iem', 'brul', 'aveugl', 'etourdi', 'statut', 'effet', 'soin', 'armur', 'boucli'],
+    label: 'Déplacement, Chute & Exploration',
+    roots: [
+      'deplac', 'mouv', 'boug', 'avanc', 'recul', 'distanc', 'cas', 'metr', 'pas',
+      'trajet', 'vites', 'sprint', 'cour', 'franch', 'terrain', 'difficil', 'chut',
+      'saut', 'escalad', 'grimp', 'nag', 'poursuit', 'voyag', 'camp', 'pieg', 'crochet',
+    ],
   },
   {
     id: 'priority_exception',
     label: 'Priorité & Exceptions',
-    roots: ['priorit', 'except', 'conflit', 'contradict', 'prim', 'restrict', 'interdict', 'permiss', 'annul', 'derog', 'specif', 'general', 'impos', 'contourn'],
+    roots: [
+      'priorit', 'except', 'conflit', 'contradict', 'prim', 'restrict', 'interdict',
+      'permiss', 'annul', 'derog', 'specif', 'general', 'impos', 'contourn', 'cumul',
+    ],
   },
   {
     id: 'victory_tie',
-    label: 'Victoire & Départage',
-    roots: ['victoir', 'gagn', 'perdr', 'fin', 'parti', 'score', 'point', 'objectif', 'egalit', 'departag', 'ex', 'aequo', 'classement', 'podium', 'vainqueur'],
+    label: 'Victoire, Objectifs & Départage',
+    roots: [
+      'victoir', 'gagn', 'perdr', 'fin', 'parti', 'score', 'point', 'objectif',
+      'egalit', 'departag', 'ex', 'aequo', 'classement', 'podium', 'vainqueur',
+    ],
   },
   {
     id: 'setup_deployment',
-    label: 'Mise en place & Préparation',
-    roots: ['mis', 'plac', 'deploi', 'plateau', 'zon', 'prepar', 'install', 'materiel', 'equip', 'compos', 'depart', 'initial'],
+    label: 'Mise en place & Création',
+    roots: [
+      'mis', 'plac', 'deploi', 'plateau', 'zon', 'prepar', 'install', 'materiel',
+      'compos', 'depart', 'initial', 'creat', 'personnag', 'historiqu', 'class',
+    ],
   },
   {
     id: 'time_clock',
     label: 'Temps, Durée & Délais',
-    roots: ['temp', 'dure', 'delai', 'minut', 'second', 'heur', 'chronometr', 'horair', 'paus', 'mort', 'prolong', 'retard', 'expir', 'ech'],
+    roots: [
+      'temp', 'dure', 'delai', 'minut', 'second', 'heur', 'chronometr', 'horair',
+      'paus', 'prolong', 'retard', 'expir', 'ech', 'scen', 'quart', 'journ',
+    ],
   },
   {
     id: 'foul_penalty',
     label: 'Fautes & Sanctions',
-    roots: ['faut', 'penal', 'sanction', 'avert', 'carton', 'disqualif', 'exclus', 'expuls', 'infract', 'manqu', 'amende', 'retrait', 'forfait', 'trich'],
+    roots: [
+      'faut', 'penal', 'sanction', 'avert', 'carton', 'disqualif', 'exclus', 'expuls',
+      'infract', 'manqu', 'amende', 'retrait', 'forfait',
+    ],
   },
   {
     id: 'referee_appeal',
     label: 'Arbitrage & Réclamations',
-    roots: ['arbitr', 'jug', 'decis', 'reclam', 'appel', 'litig', 'contest', 'vide', 'verif', 'officiel', 'rapport', 'protest'],
+    roots: [
+      'arbitr', 'jug', 'decis', 'reclam', 'appel', 'litig', 'contest', 'vide',
+      'verif', 'officiel', 'rapport', 'protest', 'mj', 'maitr',
+    ],
   },
   {
     id: 'team_players',
-    label: 'Équipe, Joueurs & Remplacements',
-    roots: ['equip', 'joueur', 'membr', 'remplac', 'substit', 'capitain', 'effectif', 'qualif', 'licenc', 'identit', 'titulair', 'banc'],
-  },
-  {
-    id: 'noise_cohabitation',
-    label: 'Tranquillité & Nuisances',
-    roots: ['bruit', 'sonor', 'nuisanc', 'tranquil', 'tapag', 'nuit', 'nocturn', 'decibel', 'musiqu', 'voisin', 'fete', 'silence'],
-  },
-  {
-    id: 'property_works',
-    label: 'Travaux, Parties communes & Biens',
-    roots: ['travaux', 'chantier', 'perceus', 'commun', 'couloir', 'hall', 'escal', 'encombr', 'stockag', 'balcon', 'facad', 'repar', 'copropriet'],
-  },
-  {
-    id: 'parking_vehicles',
-    label: 'Stationnement & Véhicules',
-    roots: ['station', 'park', 'garag', 'voitur', 'vehicul', 'electriqu', 'born', 'velo', 'trottinet', 'place', 'acces', 'badge'],
-  },
-  {
-    id: 'governance_vote',
-    label: 'Vote, Assemblée & Majorité',
-    roots: ['vot', 'assembl', 'general', 'majorit', 'quorum', 'tantiem', 'resolut', 'syndic', 'conseil', 'mandat', 'procuration', 'convoc'],
-  },
-  {
-    id: 'animals',
-    label: 'Animaux domestiques',
-    roots: ['animal', 'animaux', 'chien', 'chat', 'laiss', 'museli', 'aboi', 'domestiqu', 'compagn'],
-  },
-  {
-    id: 'dice_random',
-    label: 'Dés, Jets & Probabilités',
-    roots: ['de', 'des', 'jet', 'lanc', 'relanc', 'critiqu', 'echec', 'reussit', 'seuil', 'modificateur', 'bonus', 'malus', 'hasard'],
+    label: 'Groupe, Équipe & Alliés',
+    roots: [
+      'equip', 'joueur', 'membr', 'remplac', 'substit', 'capitain', 'effectif',
+      'alli', 'pj', 'pnj', 'compagnon', 'familier', 'montur', 'aid', 'cooper',
+    ],
   },
 ];
 
@@ -182,11 +221,11 @@ export function stripAccents(input: string): string {
 }
 
 export function normalizeFrenchWord(raw: string): string {
-  const clean = stripAccents(raw.toLowerCase()).replace(/[^a-z0-9]/g, '');
+  const clean = stripAccents(raw.toLowerCase()).replace(/[^a-z0-9+\-]/g, '');
   if (clean.length <= 2) return clean;
+  if (/^\d*d\d+$/.test(clean) || /^[+\-]\d+$/.test(clean)) return clean;
 
   let stem = clean;
-  // Light French morphological suffix normalization
   const suffixes = [
     'issements', 'issement', 'ations', 'ation', 'itions', 'ition',
     'ements', 'ement', 'euses', 'euse', 'eurs', 'eur', 'istes', 'iste',
@@ -203,7 +242,6 @@ export function normalizeFrenchWord(raw: string): string {
     }
   }
 
-  // Final plural/feminine trim if still long enough
   if (stem.length > 4 && (stem.endsWith('s') || stem.endsWith('x'))) {
     stem = stem.slice(0, -1);
   }
@@ -220,20 +258,51 @@ interface TokenPair {
 }
 
 export function tokenizeFrench(text: string): TokenPair[] {
-  const rawMatches = text.match(/[A-Za-zÀ-ÖØ-öø-ÿ0-9]+/g) || [];
+  // Capture words, dice formulas (2d6, 1d10+2), signed modifiers (+2, -5), and thresholds
+  const rawMatches =
+    text.match(/[+\-]?\d+d\d+(?:[+\-]\d+)?|[+\-]\d+|[A-Za-zÀ-ÖØ-öø-ÿ0-9]+/g) || [];
   const tokens: TokenPair[] = [];
 
   for (const raw of rawMatches) {
     const lowerNoAccent = stripAccents(raw.toLowerCase());
-    if (lowerNoAccent.length < 2) continue;
-    if (FRENCH_STOPWORDS.has(raw.toLowerCase()) || FRENCH_STOPWORDS.has(lowerNoAccent)) {
+    if (lowerNoAccent.length < 2 && !/^\d+$/.test(lowerNoAccent)) continue;
+
+    if (
+      !KEEP_SHORT_TOKENS.has(lowerNoAccent) &&
+      (FRENCH_STOPWORDS.has(raw.toLowerCase()) || FRENCH_STOPWORDS.has(lowerNoAccent))
+    ) {
       continue;
     }
+
+    // Dice notation expansion: "2d6+3" -> keeps "2d6+3", base "2d6", and die "d6"
+    const diceMatch = lowerNoAccent.match(/^(\d*)(d\d+)([+\-]\d+)?$/);
+    if (diceMatch) {
+      tokens.push({ surface: raw, stem: lowerNoAccent });
+      if (diceMatch[1] && diceMatch[2]) {
+        tokens.push({ surface: raw, stem: `${diceMatch[1]}${diceMatch[2]}` });
+        tokens.push({ surface: raw, stem: diceMatch[2] });
+      }
+      continue;
+    }
+
     const stem = normalizeFrenchWord(raw);
-    if (stem.length >= 2) {
+    if (stem.length >= 2 || /^\d+$/.test(stem)) {
       tokens.push({ surface: raw, stem });
     }
   }
+
+  // Compound JDR pairs like "DD 15" -> "dd_15", "CA 18" -> "ca_18"
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const cur = tokens[i].stem;
+    const nxt = tokens[i + 1].stem;
+    if ((cur === 'dd' || cur === 'ca' || cur === 'seuil' || cur === 'niveau') && /^\d+$/.test(nxt)) {
+      tokens.push({
+        surface: `${tokens[i].surface} ${tokens[i + 1].surface}`,
+        stem: `${cur}_${nxt}`,
+      });
+    }
+  }
+
   return tokens;
 }
 
@@ -260,7 +329,12 @@ function buildConceptVector(tokens: TokenPair[]): { vec: number[]; matchedLabels
     for (const { surface, stem } of tokens) {
       const clean = stripAccents(surface.toLowerCase());
       for (const root of concept.roots) {
-        if (stem.startsWith(root) || clean.startsWith(root) || (root.length >= 4 && clean.includes(root))) {
+        if (
+          stem === root ||
+          stem.startsWith(root) ||
+          clean.startsWith(root) ||
+          (root.length >= 4 && clean.includes(root))
+        ) {
           score += 1;
           break;
         }
@@ -272,7 +346,6 @@ function buildConceptVector(tokens: TokenPair[]): { vec: number[]; matchedLabels
     }
   }
 
-  // L2 normalize dense vector
   let norm = 0;
   for (const v of vec) norm += v * v;
   norm = Math.sqrt(norm);
@@ -323,9 +396,18 @@ function denseCosine(a: number[], b: number[]): number {
   return Math.max(0, Math.min(1, dot));
 }
 
+function extractPageNumberFromText(text: string): number | undefined {
+  const match = text.match(/(?:\(|^|\b)(?:Page|p\.)\s*(\d{1,4})\b/i);
+  if (match) {
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
 /**
  * Parses a raw Markdown or plain-text French rulebook into structured RuleChunks
- * with automatic separation of rule prose and concrete examples.
+ * with automatic separation of rule prose, concrete examples, and PDF page numbers.
  */
 export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
   const lines = rawText.replace(/\r\n/g, '\n').split('\n');
@@ -334,6 +416,7 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
   let currentSection = 'Dispositions générales';
   let currentArticleCode = '';
   let currentTitle = '';
+  let currentPageNumber: number | undefined = undefined;
   let bufferLines: string[] = [];
   let order = 0;
 
@@ -344,7 +427,6 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
       return;
     }
 
-    // Separate rule text from examples
     const paragraphs = joined.split(/\n{2,}/);
     const ruleParagraphs: string[] = [];
     const examples: string[] = [];
@@ -356,18 +438,31 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
         stripAccents(trimmed)
       );
       if (isExample) {
-        examples.push(trimmed.replace(/^(?:Exemples?|Cas pratique|Illustration)\s*[:—-]\s*/i, '').trim());
+        examples.push(
+          trimmed
+            .replace(/^(?:Exemples?|Cas pratique|Illustration)\s*[:—-]\s*/i, '')
+            .trim()
+        );
       } else {
-        // Also check line-by-line inside a paragraph if an example starts mid-block
         const subLines = trimmed.split('\n');
         const subRule: string[] = [];
         let collectingExample = false;
         const subEx: string[] = [];
         for (const sl of subLines) {
-          if (/^(?:[-*•]\s*)?(?:exemples?|cas pratique|illustration)\s*[:—-]/i.test(stripAccents(sl.trim()))) {
+          if (
+            /^(?:[-*•]\s*)?(?:exemples?|cas pratique|illustration)\s*[:—-]/i.test(
+              stripAccents(sl.trim())
+            )
+          ) {
             collectingExample = true;
             subEx.push(
-              sl.trim().replace(/^(?:[-*•]\s*)?(?:Exemples?|Cas pratique|Illustration)\s*[:—-]\s*/i, '').trim()
+              sl
+                .trim()
+                .replace(
+                  /^(?:[-*•]\s*)?(?:Exemples?|Cas pratique|Illustration)\s*[:—-]\s*/i,
+                  ''
+                )
+                .trim()
             );
           } else if (collectingExample) {
             subEx.push(sl.trim());
@@ -382,7 +477,14 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
 
     const ruleText = ruleParagraphs.join('\n\n').trim() || joined;
     const title = currentTitle || `Point réglementaire ${order + 1}`;
-    const code = currentArticleCode || `Art. ${order + 1}`;
+    const code =
+      currentArticleCode ||
+      (currentPageNumber ? `p. ${currentPageNumber}` : `Art. ${order + 1}`);
+
+    const inferredPage =
+      currentPageNumber ??
+      extractPageNumberFromText(title) ??
+      extractPageNumberFromText(currentSection);
 
     chunks.push({
       id: `${docId}::chunk-${order}`,
@@ -394,6 +496,7 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
       examples,
       rawBlock: joined,
       order,
+      pageNumber: inferredPage,
     });
     order++;
     bufferLines = [];
@@ -402,11 +505,12 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Top-level section header (# or ##)
     const h1Match = trimmed.match(/^#\s+(.+)$/);
     if (h1Match) {
       flushBuffer();
       currentSection = h1Match[1].trim();
+      const pNum = extractPageNumberFromText(currentSection);
+      if (pNum) currentPageNumber = pNum;
       continue;
     }
 
@@ -414,10 +518,11 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
     if (h2Match) {
       flushBuffer();
       currentSection = h2Match[1].trim();
+      const pNum = extractPageNumberFromText(currentSection);
+      if (pNum) currentPageNumber = pNum;
       continue;
     }
 
-    // Article / Rule header (### or "Article X.Y — Title" or "Règle X :")
     const h3Match = trimmed.match(/^###\s+(.+)$/);
     const articleMatch = trimmed.match(
       /^(?:Article|Art\.|Règle|Regle|Section|§)\s*([0-9]+(?:\.[0-9]+)*)\s*[:—\-–.]\s*(.+)$/i
@@ -426,12 +531,22 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
     if (h3Match) {
       flushBuffer();
       const fullHeader = h3Match[1].trim();
-      const codeSplit = fullHeader.match(/^((?:Art\.?|Article|Règle|§)?\s*[0-9]+(?:\.[0-9]+)*)\s*[:—\-–·]\s*(.+)$/i);
-      if (codeSplit) {
+      const pNum = extractPageNumberFromText(fullHeader);
+      if (pNum) currentPageNumber = pNum;
+
+      const pageHeaderMatch = fullHeader.match(/^Page\s+(\d+)\s*[—\-–·]\s*(.+)$/i);
+      const codeSplit = fullHeader.match(
+        /^((?:Art\.?|Article|Règle|§)?\s*[0-9]+(?:\.[0-9]+)*)\s*[:—\-–·]\s*(.+)$/i
+      );
+
+      if (pageHeaderMatch) {
+        currentArticleCode = `p. ${pageHeaderMatch[1]}`;
+        currentTitle = pageHeaderMatch[2].trim();
+      } else if (codeSplit) {
         currentArticleCode = codeSplit[1].trim();
         currentTitle = codeSplit[2].trim();
       } else {
-        currentArticleCode = `Art. ${order + 1}`;
+        currentArticleCode = pNum ? `p. ${pNum}` : `Art. ${order + 1}`;
         currentTitle = fullHeader;
       }
       continue;
@@ -441,16 +556,17 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
       flushBuffer();
       currentArticleCode = `Art. ${articleMatch[1].trim()}`;
       currentTitle = articleMatch[2].trim();
+      const pNum = extractPageNumberFromText(currentTitle);
+      if (pNum) currentPageNumber = pNum;
       continue;
     }
 
-    // If user pastes unformatted plain text with paragraphs and no headers, chunk by double newline
     bufferLines.push(line);
   }
 
   flushBuffer();
 
-  // Fallback: if a custom pasted document had only 1 giant chunk without headings, split by paragraph blocks
+  // Fallback for plain text with no headings
   if (chunks.length === 1 && chunks[0].ruleText.length > 750) {
     const single = chunks[0];
     const paras = single.rawBlock.split(/\n{2,}/).filter((p) => p.trim().length > 0);
@@ -459,13 +575,14 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
       let idx = 0;
       for (let i = 0; i < paras.length; i++) {
         const p = paras[i].trim();
-        // Merge an example paragraph with the previous rule paragraph if it starts with Exemple
         if (
           splitChunks.length > 0 &&
           /^(?:exemples?|cas pratique|illustration)\s*[:—-]/i.test(stripAccents(p))
         ) {
           splitChunks[splitChunks.length - 1].examples.push(
-            p.replace(/^(?:Exemples?|Cas pratique|Illustration)\s*[:—-]\s*/i, '').trim()
+            p
+              .replace(/^(?:Exemples?|Cas pratique|Illustration)\s*[:—-]\s*/i, '')
+              .trim()
           );
           continue;
         }
@@ -480,6 +597,7 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
           examples: [],
           rawBlock: p,
           order: idx,
+          pageNumber: single.pageNumber,
         });
         idx++;
       }
@@ -493,7 +611,11 @@ export function parseRuleDocument(rawText: string, docId: string): RuleChunk[] {
 /**
  * Builds an in-memory multi-space vector index for all rule chunks.
  */
-export function buildVectorIndex(docId: string, docTitle: string, chunks: RuleChunk[]): VectorIndex {
+export function buildVectorIndex(
+  docId: string,
+  docTitle: string,
+  chunks: RuleChunk[]
+): VectorIndex {
   const start = performance.now();
   const N = Math.max(1, chunks.length);
 
@@ -598,6 +720,12 @@ export function buildVectorIndex(docId: string, docTitle: string, chunks: RuleCh
     const char3Vec = buildChar3Grams(p.allTokens);
     const { vec: conceptVec } = buildConceptVector(p.allTokens);
 
+    const normalizedSearchBlob = stripAccents(
+      `${p.chunk.title} ${p.chunk.section} ${p.chunk.ruleText} ${p.chunk.examples.join(' ')}`
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+    );
+
     return {
       chunk: p.chunk,
       stemVec: l2Normalize(tfidf),
@@ -606,6 +734,7 @@ export function buildVectorIndex(docId: string, docTitle: string, chunks: RuleCh
       conceptVec,
       surfaceTokens: p.allTokens.map((t) => t.surface),
       stemToSurface,
+      normalizedSearchBlob,
     };
   });
 
@@ -624,22 +753,49 @@ export function buildVectorIndex(docId: string, docTitle: string, chunks: RuleCh
 }
 
 /**
- * Queries the vector index using multi-space cosine similarity and returns
- * ranked answers with calibrated concordance percentages (0-100%).
+ * Extracts exact phrases wrapped in "..." or « ... » from the user's query.
+ */
+export function parseQueryPhrases(query: string): {
+  exactPhrases: string[];
+  freeText: string;
+} {
+  const exactPhrases: string[] = [];
+  const freeText = query
+    .replace(/["«]([^"»]+)["»]/g, (_, inner: string) => {
+      const cleaned = inner.trim();
+      if (cleaned.length >= 2) exactPhrases.push(cleaned);
+      return ` ${cleaned} `;
+    })
+    .trim();
+
+  return { exactPhrases, freeText };
+}
+
+/**
+ * Queries the vector index using multi-space cosine similarity + optional exact
+ * quoted-phrase filtering and returns ranked answers with concordance percentages.
  */
 export function searchVectorIndex(
   index: VectorIndex,
   query: string,
   minConcordance = 14,
-  limit = 6
+  limit = 6,
+  allowedSections?: string[]
 ): SearchResult[] {
   const trimmed = query.trim();
   if (!trimmed) return [];
 
-  const qTokens = tokenizeFrench(trimmed);
-  if (qTokens.length === 0) return [];
+  const { exactPhrases, freeText } = parseQueryPhrases(trimmed);
+  const qTokens = tokenizeFrench(freeText || trimmed);
+  if (qTokens.length === 0 && exactPhrases.length === 0) return [];
 
-  // Query TF-IDF vector
+  // Parse comma-separated thematic segments (e.g., "combat, couvert, ligne de vue")
+  const rawSegments = (freeText || trimmed)
+    .split(',')
+    .map((s) => tokenizeFrench(s.trim()))
+    .filter((toks) => toks.length > 0);
+  const hasMultipleThemes = rawSegments.length >= 2;
+
   const qTf: SparseVector = {};
   for (const { stem } of qTokens) {
     qTf[stem] = (qTf[stem] || 0) + 1;
@@ -651,7 +807,6 @@ export function searchVectorIndex(
   }
   const normQStem = l2Normalize(qStemVec);
 
-  // Query Bigram vector
   const qBgTf: SparseVector = {};
   for (let i = 0; i < qTokens.length - 1; i++) {
     const bg = `${qTokens[i].stem}_${qTokens[i + 1].stem}`;
@@ -664,45 +819,83 @@ export function searchVectorIndex(
   }
   const normQBg = l2Normalize(qBgVec);
 
-  // Query Char 3-gram vector
   const normQChar3 = buildChar3Grams(qTokens);
-
-  // Query Semantic Concept vector
   const { vec: qConceptVec, matchedLabels: qConceptLabels } = buildConceptVector(qTokens);
+
+  const normalizedExactPhrases = exactPhrases.map((p) =>
+    stripAccents(p.toLowerCase().replace(/\s+/g, ' ').trim())
+  );
+
+  const allowedSet =
+    allowedSections && allowedSections.length > 0 ? new Set(allowedSections) : null;
 
   const results: SearchResult[] = [];
 
   for (const item of index.chunks) {
+    if (allowedSet && !allowedSet.has(item.chunk.section)) {
+      continue;
+    }
+
+    // Enforce exact phrase match if user wrapped terms in "..."
+    if (normalizedExactPhrases.length > 0) {
+      const allPhrasesMatch = normalizedExactPhrases.every((phrase) =>
+        item.normalizedSearchBlob.includes(phrase)
+      );
+      if (!allPhrasesMatch) continue;
+    }
+
     const lexicalCos = sparseCosine(normQStem, item.stemVec);
     const bigramCos = Object.keys(normQBg).length > 0 ? sparseCosine(normQBg, item.bigramVec) : 0;
     const subwordCos = sparseCosine(normQChar3, item.char3Vec);
     const semanticCos = denseCosine(qConceptVec, item.conceptVec);
 
-    // Weighted multi-space cosine fusion
     const hasBigrams = Object.keys(normQBg).length > 0;
     const rawCosine = hasBigrams
       ? lexicalCos * 0.44 + semanticCos * 0.24 + subwordCos * 0.18 + bigramCos * 0.14
       : lexicalCos * 0.50 + semanticCos * 0.28 + subwordCos * 0.22;
 
-    // Require at least minimal lexical, subword, or semantic alignment so random noise scores ~0
-    if (lexicalCos === 0 && semanticCos < 0.2 && subwordCos < 0.12) {
+    if (
+      exactPhrases.length === 0 &&
+      lexicalCos === 0 &&
+      semanticCos < 0.2 &&
+      subwordCos < 0.12
+    ) {
       continue;
     }
 
-    // Calibrated concordance curve (maps natural cosine 0.10–0.75 into readable 20%–99.2% range)
-    // Exact or near-exact queries reach 88–99%, strong topical matches 65–87%, partial 25–64%.
-    const amplified = 1 - Math.exp(-3.45 * rawCosine);
-    const exactTitleBonus =
-      qTokens.some((qt) =>
-        tokenizeFrench(item.chunk.title).some((tt) => tt.stem === qt.stem)
-      )
-        ? 0.08
-        : 0;
-    const concordance = Math.min(99.4, Math.max(0, Math.round((amplified + exactTitleBonus * (1 - amplified)) * 1000) / 10));
+    // Thematic coverage bonus when user separates concepts with commas
+    let themeBoost = 0;
+    if (hasMultipleThemes) {
+      let coveredCount = 0;
+      for (const segTokens of rawSegments) {
+        const segLexMatch = segTokens.some((t) => item.stemToSurface.has(t.stem));
+        if (segLexMatch) {
+          coveredCount++;
+        } else {
+          const { vec: segConceptVec } = buildConceptVector(segTokens);
+          if (denseCosine(segConceptVec, item.conceptVec) >= 0.35) {
+            coveredCount++;
+          }
+        }
+      }
+      const coverageRatio = coveredCount / rawSegments.length;
+      themeBoost = coverageRatio >= 1 ? 0.16 : coverageRatio * 0.08;
+    }
 
-    if (concordance < minConcordance) continue;
+    const exactBoost = exactPhrases.length > 0 ? 0.24 : 0;
+    const amplified = 1 - Math.exp(-3.45 * (rawCosine + exactBoost + themeBoost));
+    const exactTitleBonus = qTokens.some((qt) =>
+      tokenizeFrench(item.chunk.title).some((tt) => tt.stem === qt.stem)
+    )
+      ? 0.08
+      : 0;
+    const concordance = Math.min(
+      99.6,
+      Math.max(0, Math.round((amplified + exactTitleBonus * (1 - amplified)) * 1000) / 10)
+    );
 
-    // Collect matched surface terms for exact highlighting
+    if (exactPhrases.length === 0 && concordance < minConcordance) continue;
+
     const matchedTermSet = new Set<string>();
     for (const qt of qTokens) {
       const surfaces = item.stemToSurface.get(qt.stem);
@@ -710,8 +903,12 @@ export function searchVectorIndex(
         for (const s of surfaces) matchedTermSet.add(s);
       }
     }
+    for (const phrase of exactPhrases) {
+      for (const word of phrase.split(/\s+/)) {
+        if (word.length >= 2) matchedTermSet.add(word);
+      }
+    }
 
-    // Collect shared semantic concepts
     const { matchedLabels: docConceptLabels } = buildConceptVector(
       tokenizeFrench(`${item.chunk.title} ${item.chunk.ruleText}`)
     );
@@ -729,6 +926,7 @@ export function searchVectorIndex(
       },
       matchedTerms: Array.from(matchedTermSet),
       matchedConcepts: sharedConcepts,
+      exactPhrasesMatched: exactPhrases,
     });
   }
 
