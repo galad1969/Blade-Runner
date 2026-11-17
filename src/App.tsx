@@ -29,6 +29,7 @@ import { MethodologyView } from './components/MethodologyView';
 import { ImportedDocPayload, ImportModal } from './components/ImportModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { SourcePreviewModal } from './components/SourcePreviewModal';
 
 type ActiveView = 'search' | 'source' | 'methodology';
 
@@ -41,6 +42,8 @@ export default function App() {
   const [query, setQuery] = useState<string>('');
   const [minThreshold, setMinThreshold] = useState<number>(15);
   const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
+  const [popupChunkId, setPopupChunkId] = useState<string | null>(null);
+  const [popupMatchedTerms, setPopupMatchedTerms] = useState<string[]>([]);
   const [isImportOpen, setIsImportOpen] = useState<boolean>(false);
   const [isDraggingDropzone, setIsDraggingDropzone] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -110,6 +113,11 @@ export default function App() {
     setHighlightedChunkId(chunkId);
     setActiveView('source');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleOpenSourcePopup = (chunkId: string, matchedTerms: string[]) => {
+    setPopupChunkId(chunkId);
+    setPopupMatchedTerms(matchedTerms);
   };
 
   const handleImportDocument = async (payload: ImportedDocPayload) => {
@@ -720,7 +728,9 @@ export default function App() {
                             key={result.chunk.id}
                             result={result}
                             rank={idx + 1}
-                            onInspectSource={handleInspectSource}
+                            onInspectSource={(chunkId) =>
+                              handleOpenSourcePopup(chunkId, result.matchedTerms)
+                            }
                           />
                         ))}
                       </div>
@@ -823,6 +833,17 @@ export default function App() {
       </nav>
 
       <OfflineIndicator />
+
+      <SourcePreviewModal
+        isOpen={Boolean(popupChunkId)}
+        docTitle={activeDoc?.title ?? ''}
+        chunks={vectorIndex ? vectorIndex.chunks.map((c) => c.chunk) : []}
+        activeChunkId={popupChunkId}
+        matchedTerms={popupMatchedTerms}
+        onSelectChunkId={(chunkId) => setPopupChunkId(chunkId)}
+        onOpenInDocumentTab={handleInspectSource}
+        onClose={() => setPopupChunkId(null)}
+      />
 
       <ImportModal
         isOpen={isImportOpen}
