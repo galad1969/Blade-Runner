@@ -112,11 +112,11 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       )}
 
       {/* Footer Actions & Vector Inspector Toggle */}
-      <div className="mt-5 pt-4 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-4">
+      <div className="mt-5 pt-3 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           onClick={() => setShowVectorDetails((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-100 transition-colors cursor-pointer py-1"
+          className="inline-flex items-center gap-1.5 min-h-[44px] sm:min-h-[32px] text-xs font-medium text-slate-400 hover:text-slate-100 transition-colors cursor-pointer py-1"
         >
           <span>Détail de concordance vectorielle</span>
           {showVectorDetails ? (
@@ -129,7 +129,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
         <button
           type="button"
           onClick={() => onInspectSource(chunk.id)}
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors cursor-pointer whitespace-nowrap shrink-0 py-1"
+          className="inline-flex items-center gap-1.5 min-h-[44px] sm:min-h-[32px] text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors cursor-pointer whitespace-nowrap shrink-0 py-1"
         >
           <span>Voir dans le document source</span>
           <ArrowUpRight className="w-3.5 h-3.5" />

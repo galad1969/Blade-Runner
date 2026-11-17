@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" fill="#07090D"/>
+  <rect x="64" y="64" width="384" height="384" stroke="#1E293B" stroke-width="6"/>
+  <!-- Corner industrial reticles -->
+  <path d="M64 116V64H116" stroke="#22D3EE" stroke-width="8" stroke-linecap="square"/>
+  <path d="M396 64H448V116" stroke="#22D3EE" stroke-width="8" stroke-linecap="square"/>
+  <path d="M64 396V448H116" stroke="#22D3EE" stroke-width="8" stroke-linecap="square"/>
+  <path d="M396 448H448V396" stroke="#22D3EE" stroke-width="8" stroke-linecap="square"/>
+  <!-- Central vector chevron & concordance bars -->
+  <path d="M152 168L256 344L360 168" stroke="#F59E0B" stroke-width="28" stroke-linecap="square" stroke-linejoin="miter"/>
+  <rect x="208" y="176" width="96" height="14" fill="#22D3EE"/>
+  <rect x="228" y="212" width="56" height="14" fill="#F59E0B" opacity="0.85"/>
+  <circle cx="256" cy="344" r="14" fill="#22D3EE"/>
+</svg>

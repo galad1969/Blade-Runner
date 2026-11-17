@@ -1,51 +1,41 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, FileUp, Search, Trash2, X } from 'lucide-react';
+import {
+  BookOpen,
+  Cpu,
+  FileUp,
+  Link2,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   buildVectorIndex,
   parseRuleDocument,
   searchVectorIndex,
 } from './engine/vectorSearch';
+import { extractTextFromPdfBuffer } from './engine/pdfParser';
+import {
+  getLinkedFileHandle,
+  loadAllDocuments,
+  removeDocument,
+  saveDocument,
+  supportsFileSystemAccess,
+  UserDocument,
+} from './engine/storage';
 import { ResultCard } from './components/ResultCard';
 import { DocumentSourceView } from './components/DocumentSourceView';
 import { MethodologyView } from './components/MethodologyView';
-import { ImportModal } from './components/ImportModal';
+import { ImportedDocPayload, ImportModal } from './components/ImportModal';
+import { PWAInstallBanner } from './components/PWAInstallBanner';
+import { OfflineIndicator } from './components/OfflineIndicator';
 
 type ActiveView = 'search' | 'source' | 'methodology';
 
-interface UserDocument {
-  id: string;
-  title: string;
-  subtitle: string;
-  rawText: string;
-}
-
-const STORAGE_KEY = 'codex_vecteur_user_docs_v1';
-
-function loadStoredDocuments(): UserDocument[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return parsed.filter(
-        (d): d is UserDocument =>
-          typeof d?.id === 'string' &&
-          typeof d?.title === 'string' &&
-          typeof d?.rawText === 'string'
-      );
-    }
-    return [];
-  } catch {
-    return [];
-  }
-}
-
 export default function App() {
-  const [documents, setDocuments] = useState<UserDocument[]>(() => loadStoredDocuments());
-  const [activeDocId, setActiveDocId] = useState<string | null>(() => {
-    const stored = loadStoredDocuments();
-    return stored.length > 0 ? stored[0].id : null;
-  });
+  const [documents, setDocuments] = useState<UserDocument[]>([]);
+  const [isLoadingDocs, setIsLoadingDocs] = useState<boolean>(true);
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>('search');
 
   const [query, setQuery] = useState<string>('');
@@ -54,24 +44,38 @@ export default function App() {
   const [isImportOpen, setIsImportOpen] = useState<boolean>(false);
   const [isDraggingDropzone, setIsDraggingDropzone] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [quickExtractProgress, setQuickExtractProgress] = useState<{
+    fileName: string;
+    current: number;
+    total: number;
+  } | null>(null);
+  const [isReloadingLinked, setIsReloadingLinked] = useState<boolean>(false);
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const quickFileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const canLinkLocalFile = useMemo(() => supportsFileSystemAccess(), []);
+
   useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(documents));
-    } catch {
-      // Ignore storage quota errors silently
-    }
-  }, [documents]);
+    let active = true;
+    loadAllDocuments().then((loaded) => {
+      if (!active) return;
+      setDocuments(loaded);
+      if (loaded.length > 0) {
+        setActiveDocId(loaded[0].id);
+      }
+      setIsLoadingDocs(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const activeDoc = useMemo(
     () => documents.find((d) => d.id === activeDocId) ?? documents[0] ?? null,
     [documents, activeDocId]
   );
 
-  // Parse and vector-index the active user document synchronously in memory
   const vectorIndex = useMemo(() => {
     if (!activeDoc) return null;
     const chunks = parseRuleDocument(activeDoc.rawText, activeDoc.id);
@@ -86,9 +90,11 @@ export default function App() {
   const handleSelectDocument = (docId: string) => {
     setActiveDocId(docId);
     setHighlightedChunkId(null);
+    setUploadError(null);
   };
 
-  const handleDeleteDocument = (docId: string) => {
+  const handleDeleteDocument = async (docId: string) => {
+    await removeDocument(docId);
     setDocuments((prev) => {
       const remaining = prev.filter((d) => d.id !== docId);
       if (activeDocId === docId) {
@@ -106,15 +112,21 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleImportDocument = (title: string, subtitle: string, rawText: string) => {
+  const handleImportDocument = async (payload: ImportedDocPayload) => {
     const newId = `doc-${Date.now()}`;
-    const customDoc: UserDocument = {
+    const newDoc: UserDocument = {
       id: newId,
-      title,
-      subtitle,
-      rawText,
+      title: payload.title,
+      subtitle: payload.subtitle,
+      rawText: payload.rawText,
+      sourceType: payload.sourceType,
+      pageCount: payload.pageCount,
+      fileName: payload.fileName,
+      updatedAt: Date.now(),
+      hasLinkedHandle: Boolean(payload.fileHandle),
     };
-    setDocuments((prev) => [...prev, customDoc]);
+    await saveDocument(newDoc, payload.fileHandle);
+    setDocuments((prev) => [...prev, newDoc]);
     setActiveDocId(newId);
     setQuery('');
     setHighlightedChunkId(null);
@@ -122,24 +134,152 @@ export default function App() {
     setActiveView('search');
   };
 
-  const processQuickFiles = (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return;
+  const processFileDirect = async (file: File, handle?: FileSystemFileHandle) => {
     setUploadError(null);
-    const file = fileList[0];
+    const isPdf =
+      file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const cleanTitle = file.name.replace(/\.(pdf|md|txt)$/i, '') || 'Document personnel';
+
+    if (isPdf) {
+      setQuickExtractProgress({ fileName: file.name, current: 0, total: 1 });
+      try {
+        const buffer = await file.arrayBuffer();
+        const extracted = await extractTextFromPdfBuffer(buffer, (current, total) => {
+          setQuickExtractProgress({ fileName: file.name, current, total });
+        });
+        await handleImportDocument({
+          title: cleanTitle,
+          subtitle: `PDF local · ${extracted.pageCount} pages`,
+          rawText: extracted.structuredText,
+          sourceType: 'pdf',
+          pageCount: extracted.pageCount,
+          fileName: file.name,
+          fileHandle: handle,
+        });
+      } catch (err) {
+        setUploadError(
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de la lecture locale du fichier PDF.'
+        );
+      } finally {
+        setQuickExtractProgress(null);
+      }
+      return;
+    }
+
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const content = typeof reader.result === 'string' ? reader.result : '';
       if (content.trim().length < 20) {
-        setUploadError('Le fichier sélectionné est vide ou trop court (minimum 20 caractères).');
+        setUploadError(
+          'Le fichier sélectionné est vide ou trop court (minimum 20 caractères).'
+        );
         return;
       }
-      const cleanTitle = file.name.replace(/\.(md|txt)$/i, '') || 'Document personnel';
-      handleImportDocument(cleanTitle, 'Document source importé', content);
+      await handleImportDocument({
+        title: cleanTitle,
+        subtitle: 'Document texte local',
+        rawText: content,
+        sourceType: 'text',
+        fileName: file.name,
+        fileHandle: handle,
+      });
     };
     reader.onerror = () => {
       setUploadError('Impossible de lire le fichier sélectionné.');
     };
     reader.readAsText(file, 'utf-8');
+  };
+
+  const handleQuickLinkFile = async () => {
+    setUploadError(null);
+    try {
+      const picker = (
+        window as unknown as {
+          showOpenFilePicker: (opts: unknown) => Promise<FileSystemFileHandle[]>;
+        }
+      ).showOpenFilePicker;
+      const [handle] = await picker({
+        multiple: false,
+        types: [
+          {
+            description: 'Documents PDF ou texte (.pdf, .txt, .md)',
+            accept: {
+              'application/pdf': ['.pdf'],
+              'text/plain': ['.txt'],
+              'text/markdown': ['.md'],
+            },
+          },
+        ],
+      });
+      if (!handle) return;
+      const file = await handle.getFile();
+      await processFileDirect(file, handle);
+    } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError') return;
+      setUploadError('Impossible de lier ce fichier local.');
+    }
+  };
+
+  const handleReloadLinkedDoc = async (doc: UserDocument) => {
+    setUploadError(null);
+    setIsReloadingLinked(true);
+    try {
+      const handle = await getLinkedFileHandle(doc.id);
+      if (!handle) {
+        setUploadError('Lien fichier introuvable. Réimportez le document.');
+        return;
+      }
+      const permHandle = handle as unknown as {
+        queryPermission?: (desc: { mode: string }) => Promise<string>;
+        requestPermission?: (desc: { mode: string }) => Promise<string>;
+      };
+      if (permHandle.queryPermission && permHandle.requestPermission) {
+        let perm = await permHandle.queryPermission({ mode: 'read' });
+        if (perm !== 'granted') {
+          perm = await permHandle.requestPermission({ mode: 'read' });
+        }
+        if (perm !== 'granted') {
+          setUploadError('Autorisation refusée pour relire le fichier local.');
+          return;
+        }
+      }
+
+      const file = await handle.getFile();
+      const isPdf =
+        file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      let updatedText = '';
+      let updatedPageCount = doc.pageCount;
+
+      if (isPdf) {
+        const buffer = await file.arrayBuffer();
+        const extracted = await extractTextFromPdfBuffer(buffer);
+        updatedText = extracted.structuredText;
+        updatedPageCount = extracted.pageCount;
+      } else {
+        updatedText = await file.text();
+      }
+
+      const updatedDoc: UserDocument = {
+        ...doc,
+        rawText: updatedText,
+        pageCount: updatedPageCount,
+        subtitle:
+          isPdf && updatedPageCount
+            ? `PDF local · ${updatedPageCount} pages`
+            : doc.subtitle,
+        updatedAt: Date.now(),
+      };
+      await saveDocument(updatedDoc, handle);
+      setDocuments((prev) => prev.map((d) => (d.id === doc.id ? updatedDoc : d)));
+    } catch (err) {
+      setUploadError(
+        err instanceof Error ? err.message : 'Échec du rechargement du fichier lié.'
+      );
+    } finally {
+      setIsReloadingLinked(false);
+    }
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -154,19 +294,19 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#07090D] text-slate-100 br-grid-backdrop">
-      {/* Top Bar Contract: 3 zones separated by gap-8 */}
+      {/* Top Bar Contract: compact 48px on mobile (<md), 64px 3-zone on desktop (md+) */}
       <header className="sticky top-0 z-40 bg-[#07090D]/90 backdrop-blur-md border-b border-white/[0.08]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-12 md:h-16 flex items-center justify-between gap-4 md:gap-8">
           {/* Zone 1: Single text element wordmark */}
           <button
             type="button"
             onClick={() => setActiveView('search')}
-            className="font-display text-xl font-bold tracking-[0.1em] text-slate-50 hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="font-display text-lg md:text-xl font-bold tracking-[0.1em] text-slate-50 hover:text-amber-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             CODEX VECTEUR
           </button>
 
-          {/* Zone 2: Clean single-line navigation links */}
+          {/* Zone 2: Desktop single-line navigation links */}
           <nav
             aria-label="Navigation principale"
             className="hidden md:flex items-center gap-7 text-sm font-medium"
@@ -211,72 +351,53 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}
-              className="px-4 py-2 text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="px-3.5 md:px-4 py-1.5 md:py-2 text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               Importer un document
             </button>
           </div>
         </div>
-
-        {/* Mobile Secondary Navigation Row */}
-        <div className="md:hidden border-t border-white/[0.06] px-4 py-2 flex items-center justify-around text-xs font-medium">
-          <button
-            type="button"
-            onClick={() => setActiveView('search')}
-            className={`py-1 px-2 cursor-pointer ${
-              activeView === 'search' ? 'text-amber-400' : 'text-slate-400'
-            }`}
-          >
-            Recherche
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveView('source')}
-            className={`py-1 px-2 cursor-pointer ${
-              activeView === 'source' ? 'text-amber-400' : 'text-slate-400'
-            }`}
-          >
-            Document source
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveView('methodology')}
-            className={`py-1 px-2 cursor-pointer ${
-              activeView === 'methodology' ? 'text-amber-400' : 'text-slate-400'
-            }`}
-          >
-            Méthode
-          </button>
-        </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1">
+      {/* Prominent In-App Android/iOS PWA Install Banner */}
+      <PWAInstallBanner />
+
+      {/* Main Content (padded at bottom on mobile for fixed thumb navigation bar) */}
+      <main className="flex-1 pb-20 md:pb-0">
         {activeView === 'search' && (
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-20">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 md:pt-12 pb-12 md:pb-20">
             {/* Editorial Headline & Clarity */}
             <div className="max-w-2xl">
               <h1
-                className="font-display text-4xl sm:text-5xl font-semibold tracking-wide text-slate-50 leading-[1.08]"
+                className="font-display text-3xl sm:text-5xl font-semibold tracking-wide text-slate-50 leading-[1.08]"
                 style={{ textWrap: 'balance' }}
               >
                 Interroger un point de règle
               </h1>
-              <p className="mt-3 text-base text-slate-300 leading-relaxed">
-                Chargez votre document personnel puis posez votre question en français. Le
-                moteur vectoriel extrait les passages les plus pertinents avec exemples et
-                indice de concordance.
+              <p className="mt-2.5 sm:mt-3 text-sm sm:text-base text-slate-300 leading-relaxed">
+                Chargez un fichier PDF, texte ou Markdown local puis posez votre question en
+                français. L’extraction et l’index vectoriel restent intégralement sur votre
+                appareil.
               </p>
             </div>
 
-            {/* Empty State: No document uploaded yet */}
-            {!activeDoc || !vectorIndex ? (
-              <div className="mt-10">
+            {isLoadingDocs ? (
+              <div className="mt-10 bg-[#0C1018] border border-white/[0.08] p-8 text-center">
+                <p className="text-sm text-slate-400">
+                  Chargement de votre bibliothèque locale…
+                </p>
+              </div>
+            ) : !activeDoc || !vectorIndex ? (
+              /* Empty State: No document uploaded yet */
+              <div className="mt-8 sm:mt-10">
                 <input
                   ref={quickFileInputRef}
                   type="file"
-                  accept=".txt,.md,text/plain,text/markdown"
-                  onChange={(e) => processQuickFiles(e.target.files)}
+                  accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void processFileDirect(f);
+                  }}
                   className="hidden"
                 />
                 <div
@@ -288,52 +409,92 @@ export default function App() {
                   onDrop={(e) => {
                     e.preventDefault();
                     setIsDraggingDropzone(false);
-                    processQuickFiles(e.dataTransfer.files);
+                    const f = e.dataTransfer.files?.[0];
+                    if (f) void processFileDirect(f);
                   }}
-                  className={`border border-dashed p-10 sm:p-14 text-center transition-colors ${
+                  className={`border border-dashed p-7 sm:p-14 text-center transition-colors ${
                     isDraggingDropzone
                       ? 'bg-amber-500/10 border-amber-400 br-amber-glow'
                       : 'bg-[#0C1018] border-white/[0.16]'
                   }`}
                 >
-                  <FileUp className="w-8 h-8 text-amber-400 mx-auto mb-4" />
+                  <FileUp className="w-8 h-8 text-amber-400 mx-auto mb-3.5" />
                   <h2 className="font-display text-2xl sm:text-3xl font-semibold text-slate-50">
-                    Déposez votre document source ici
+                    Importer un document PDF ou texte
                   </h2>
-                  <p className="mt-2.5 text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
-                    Formats pris en charge : fichiers texte brut ou Markdown (.txt, .md).
-                    L’indexation vectorielle s’effectue intégralement dans votre navigateur.
+                  <p className="mt-2 text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
+                    Formats pris en charge : <strong className="text-slate-200">.pdf</strong>{' '}
+                    (texte sélectionnable), <strong className="text-slate-200">.txt</strong> et{' '}
+                    <strong className="text-slate-200">.md</strong>. Stocké localement dans
+                    votre navigateur pour un accès hors-ligne.
                   </p>
 
-                  <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => quickFileInputRef.current?.click()}
-                      className="px-6 py-2.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-[#07090D] transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                      Choisir un fichier (.txt, .md)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsImportOpen(true)}
-                      className="px-6 py-2.5 text-xs font-medium bg-white/[0.05] hover:bg-white/[0.1] text-slate-200 border border-white/[0.12] transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                      Coller un texte manuellement
-                    </button>
-                  </div>
+                  {quickExtractProgress ? (
+                    <div className="mt-6 max-w-sm mx-auto text-left">
+                      <div className="flex items-center justify-between text-xs text-cyan-300 mb-1.5">
+                        <span className="truncate pr-2">
+                          Analyse de {quickExtractProgress.fileName}…
+                        </span>
+                        <span className="font-mono tabular-nums shrink-0">
+                          {quickExtractProgress.current} / {quickExtractProgress.total}
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full bg-cyan-400 transition-all duration-150"
+                          style={{
+                            width: `${Math.round(
+                              (quickExtractProgress.current /
+                                Math.max(1, quickExtractProgress.total)) *
+                                100
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-7 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center justify-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => quickFileInputRef.current?.click()}
+                        className="min-h-[44px] px-6 py-2.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-[#07090D] transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Choisir un PDF / fichier
+                      </button>
+                      {canLinkLocalFile && (
+                        <button
+                          type="button"
+                          onClick={handleQuickLinkFile}
+                          className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 py-2.5 text-xs font-medium bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-200 border border-cyan-500/35 transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          <Link2 className="w-3.5 h-3.5" />
+                          <span>Lier un fichier local</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setIsImportOpen(true)}
+                        className="min-h-[44px] px-5 py-2.5 text-xs font-medium bg-white/[0.05] hover:bg-white/[0.1] text-slate-200 border border-white/[0.12] transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Coller un texte
+                      </button>
+                    </div>
+                  )}
 
                   {uploadError && (
-                    <p className="mt-5 text-xs text-rose-400">{uploadError}</p>
+                    <p className="mt-5 text-xs text-rose-400 max-w-md mx-auto">
+                      {uploadError}
+                    </p>
                   )}
                 </div>
               </div>
             ) : (
               <>
                 {/* Active Source Document Selector */}
-                <div className="mt-8">
-                  <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
+                <div className="mt-7 sm:mt-8">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                     <span className="text-xs font-medium text-slate-400">
-                      Documents chargés
+                      Documents locaux ({documents.length})
                     </span>
                     <button
                       type="button"
@@ -341,11 +502,11 @@ export default function App() {
                         setHighlightedChunkId(null);
                         setActiveView('source');
                       }}
-                      className="inline-flex items-center gap-1.5 text-xs text-cyan-300 hover:text-cyan-200 transition-colors cursor-pointer"
+                      className="inline-flex items-center gap-1.5 min-h-[36px] text-xs text-cyan-300 hover:text-cyan-200 transition-colors cursor-pointer"
                     >
                       <BookOpen className="w-3.5 h-3.5" />
                       <span>
-                        Consulter le texte intégral ({vectorIndex.chunks.length} articles)
+                        Texte intégral ({vectorIndex.chunks.length} articles)
                       </span>
                     </button>
                   </div>
@@ -360,7 +521,7 @@ export default function App() {
                       return (
                         <div
                           key={doc.id}
-                          className={`inline-flex items-center border transition-colors ${
+                          className={`inline-flex items-center border transition-colors max-w-full ${
                             isActive
                               ? 'bg-[#131925] border-amber-400/60 text-amber-300'
                               : 'bg-[#0B0E15] border-white/[0.08] text-slate-400 hover:text-slate-200 hover:border-white/[0.16]'
@@ -371,16 +532,34 @@ export default function App() {
                             role="tab"
                             aria-selected={isActive}
                             onClick={() => handleSelectDocument(doc.id)}
-                            className="px-3.5 py-2 text-xs font-medium cursor-pointer whitespace-nowrap"
+                            className="min-h-[44px] sm:min-h-[38px] px-3.5 py-2 text-xs font-medium cursor-pointer truncate max-w-[200px] sm:max-w-[260px]"
                           >
                             {doc.title}
                           </button>
+
+                          {doc.hasLinkedHandle && isActive && (
+                            <button
+                              type="button"
+                              disabled={isReloadingLinked}
+                              onClick={() => void handleReloadLinkedDoc(doc)}
+                              aria-label={`Actualiser ${doc.title}`}
+                              title="Relire le fichier local lié"
+                              className="min-w-[40px] min-h-[44px] sm:min-h-[38px] flex items-center justify-center text-cyan-300 hover:text-cyan-200 transition-colors cursor-pointer disabled:opacity-40"
+                            >
+                              <RefreshCw
+                                className={`w-3.5 h-3.5 ${
+                                  isReloadingLinked ? 'animate-spin' : ''
+                                }`}
+                              />
+                            </button>
+                          )}
+
                           <button
                             type="button"
-                            onClick={() => handleDeleteDocument(doc.id)}
+                            onClick={() => void handleDeleteDocument(doc.id)}
                             aria-label={`Retirer ${doc.title}`}
                             title="Retirer ce document"
-                            className="pr-2.5 pl-1 py-2 text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
+                            className="min-w-[40px] min-h-[44px] sm:min-h-[38px] flex items-center justify-center pr-1 text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -388,10 +567,14 @@ export default function App() {
                       );
                     })}
                   </div>
+
+                  {uploadError && (
+                    <p className="mt-3 text-xs text-rose-400">{uploadError}</p>
+                  )}
                 </div>
 
-                {/* Search Input Form */}
-                <form onSubmit={handleSearchSubmit} className="mt-6">
+                {/* Search Input Form (16px font size prevents iOS/Android auto-zoom) */}
+                <form onSubmit={handleSearchSubmit} className="mt-5 sm:mt-6">
                   <div className="flex flex-col sm:flex-row items-stretch bg-[#0C1018] border border-white/[0.14] focus-within:border-amber-400/75 focus-within:br-amber-glow transition-all">
                     <div className="relative flex-1 flex items-center">
                       <Search className="w-4 h-4 text-slate-400 ml-4 shrink-0 pointer-events-none" />
@@ -402,7 +585,7 @@ export default function App() {
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Posez votre question en français sur un point de règle..."
                         aria-label="Votre question sur un point de règle"
-                        className="w-full bg-transparent px-3.5 py-4 text-base text-slate-50 placeholder:text-slate-500 focus:outline-none"
+                        className="w-full min-h-[48px] bg-transparent px-3.5 py-3.5 text-base text-slate-50 placeholder:text-slate-500 focus:outline-none"
                       />
                       {query && (
                         <button
@@ -412,7 +595,7 @@ export default function App() {
                             searchInputRef.current?.focus();
                           }}
                           aria-label="Effacer la question"
-                          className="p-2 mr-1 text-slate-400 hover:text-slate-100 transition-colors cursor-pointer"
+                          className="min-w-[44px] min-h-[44px] flex items-center justify-center mr-1 text-slate-400 hover:text-slate-100 transition-colors cursor-pointer"
                         >
                           <X className="w-4 h-4" />
                         </button>
@@ -421,7 +604,7 @@ export default function App() {
 
                     <button
                       type="submit"
-                      className="px-7 py-3.5 sm:py-0 bg-amber-500 hover:bg-amber-400 text-[#07090D] font-semibold text-sm tracking-wide transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                      className="min-h-[48px] px-7 py-3 sm:py-0 bg-amber-500 hover:bg-amber-400 text-[#07090D] font-semibold text-sm tracking-wide transition-colors cursor-pointer whitespace-nowrap shrink-0"
                     >
                       Rechercher
                     </button>
@@ -430,8 +613,8 @@ export default function App() {
 
                 {/* Document Structure Overview or Search Results */}
                 {!query.trim() ? (
-                  <div className="mt-10 pt-8 border-t border-white/[0.07]">
-                    <div className="flex items-baseline justify-between gap-4 mb-4">
+                  <div className="mt-9 pt-7 border-t border-white/[0.07]">
+                    <div className="flex flex-wrap items-baseline justify-between gap-3 mb-3">
                       <h2 className="font-display text-2xl font-semibold text-slate-100">
                         Structure du document indexé
                       </h2>
@@ -440,7 +623,7 @@ export default function App() {
                       </span>
                     </div>
                     <p className="text-sm text-slate-400 mb-5">{activeDoc.subtitle}</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                       {sectionsList.map((sec) => {
                         const count = vectorIndex.chunks.filter(
                           (c) => c.chunk.section === sec
@@ -453,7 +636,7 @@ export default function App() {
                             key={sec}
                             type="button"
                             onClick={() => firstChunk && handleInspectSource(firstChunk.id)}
-                            className="text-left p-4 bg-[#0A0D13] hover:bg-[#0F141E] border border-white/[0.07] hover:border-white/[0.16] transition-colors cursor-pointer"
+                            className="text-left min-h-[52px] p-4 bg-[#0A0D13] hover:bg-[#0F141E] border border-white/[0.07] hover:border-white/[0.16] transition-colors cursor-pointer"
                           >
                             <div className="flex items-baseline justify-between gap-3">
                               <span className="text-sm font-medium text-slate-100">
@@ -469,7 +652,7 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-10">
+                  <div className="mt-9">
                     {/* Results Header */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
                       <div className="text-sm text-slate-300">
@@ -491,7 +674,7 @@ export default function App() {
                           id="threshold-select"
                           value={minThreshold}
                           onChange={(e) => setMinThreshold(Number(e.target.value))}
-                          className="bg-[#0C1018] border border-white/[0.12] text-slate-200 font-mono text-xs px-2.5 py-1 focus:outline-none focus:border-cyan-400/60"
+                          className="min-h-[40px] bg-[#0C1018] border border-white/[0.12] text-slate-200 font-mono text-xs px-3 py-1 focus:outline-none focus:border-cyan-400/60"
                         >
                           <option value={5}>5 % (large)</option>
                           <option value={15}>15 % (équilibré)</option>
@@ -502,7 +685,7 @@ export default function App() {
 
                     {/* Result List or Empty State */}
                     {results.length === 0 ? (
-                      <div className="mt-6 bg-[#0C1018] border border-white/[0.08] p-8 text-center">
+                      <div className="mt-6 bg-[#0C1018] border border-white/[0.08] p-7 sm:p-8 text-center">
                         <p className="font-display text-2xl font-semibold text-slate-100">
                           Aucune correspondance suffisante
                         </p>
@@ -516,7 +699,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => setMinThreshold(5)}
-                              className="px-4 py-2 text-xs font-medium bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 transition-colors cursor-pointer"
+                              className="min-h-[44px] px-4 py-2 text-xs font-medium bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 transition-colors cursor-pointer"
                             >
                               Élargir le seuil à 5 %
                             </button>
@@ -524,7 +707,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => setActiveView('source')}
-                            className="px-4 py-2 text-xs font-medium bg-white/[0.05] hover:bg-white/[0.1] text-slate-200 border border-white/[0.1] transition-colors cursor-pointer"
+                            className="min-h-[44px] px-4 py-2 text-xs font-medium bg-white/[0.05] hover:bg-white/[0.1] text-slate-200 border border-white/[0.1] transition-colors cursor-pointer"
                           >
                             Parcourir le document source
                           </button>
@@ -568,10 +751,12 @@ export default function App() {
         )}
       </main>
 
-      {/* Quiet Editorial Footer */}
-      <footer className="border-t border-white/[0.07] py-6 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <span>CODEX VECTEUR · Indexation et recherche vectorielle statique en français</span>
+      {/* Desktop Quiet Editorial Footer */}
+      <footer className="hidden md:block border-t border-white/[0.07] py-6 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-4 text-xs text-slate-500">
+          <span>
+            CODEX VECTEUR · Recherche vectorielle statique et analyse PDF hors-ligne
+          </span>
           <div className="flex items-center gap-5">
             <button
               type="button"
@@ -597,6 +782,47 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Mobile Android Thumb-Zone Bottom Tab Bar (56px, paired with 48px header = 104px <= 15% mobile height) */}
+      <nav
+        aria-label="Navigation mobile"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#07090D]/95 backdrop-blur-md border-t border-white/[0.1] grid grid-cols-3 items-center"
+      >
+        <button
+          type="button"
+          onClick={() => setActiveView('search')}
+          className={`h-full flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer ${
+            activeView === 'search' ? 'text-amber-400' : 'text-slate-400'
+          }`}
+        >
+          <Search className="w-5 h-5" />
+          <span className="text-[11px] font-medium tracking-tight">Recherche</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveView('source')}
+          className={`h-full flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer ${
+            activeView === 'source' ? 'text-amber-400' : 'text-slate-400'
+          }`}
+        >
+          <BookOpen className="w-5 h-5" />
+          <span className="text-[11px] font-medium tracking-tight">Document</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveView('methodology')}
+          className={`h-full flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer ${
+            activeView === 'methodology' ? 'text-amber-400' : 'text-slate-400'
+          }`}
+        >
+          <Cpu className="w-5 h-5" />
+          <span className="text-[11px] font-medium tracking-tight">Méthode</span>
+        </button>
+      </nav>
+
+      <OfflineIndicator />
 
       <ImportModal
         isOpen={isImportOpen}
