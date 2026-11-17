@@ -922,7 +922,6 @@ export default function App() {
         availablePages={availablePages}
         onSelectChunkId={(chunkId) => setPopupChunkId(chunkId)}
         onJumpToPage={handleJumpToPage}
-        onOpenInDocumentTab={handleInspectSource}
         onClose={() => setPopupChunkId(null)}
       />
 
