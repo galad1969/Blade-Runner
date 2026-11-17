@@ -73,6 +73,14 @@ export const ResultCard: React.FC<ResultCardProps> = ({
           </span>
           <span aria-hidden="true">·</span>
           <span className="font-mono text-slate-200">{chunk.articleCode}</span>
+          {chunk.pageNumber && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-cyan-300 tabular-nums">
+                Page {chunk.pageNumber}
+              </span>
+            </>
+          )}
           <span aria-hidden="true">·</span>
           <span className="text-slate-400">{chunk.section}</span>
           {exactPhrasesMatched && exactPhrasesMatched.length > 0 && (

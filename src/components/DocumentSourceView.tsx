@@ -181,8 +181,16 @@ export const DocumentSourceView: React.FC<DocumentSourceViewProps> = ({
                       : 'bg-[#0C1018] border-white/[0.07]'
                   }`}
                 >
-                  <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mb-2">
                     <span className="font-mono text-amber-400">{chunk.articleCode}</span>
+                    {chunk.pageNumber && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-mono text-cyan-300 tabular-nums">
+                          Page {chunk.pageNumber}
+                        </span>
+                      </>
+                    )}
                     <span aria-hidden="true">·</span>
                     <span>{chunk.section}</span>
                   </div>

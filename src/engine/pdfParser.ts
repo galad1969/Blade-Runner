@@ -347,10 +347,10 @@ export async function extractTextFromPdfBuffer(
     flushPara();
 
     if (pageParagraphs.length > 0) {
-      if (!pageHasHeading && totalPages > 1) {
-        outputBlocks.push(
-          `### Page ${pageNum} — Extrait\n${pageParagraphs.join('\n\n')}`
-        );
+      const startsWithHeading = /^#{2,3}\s+/.test(pageParagraphs[0]);
+      if (!startsWithHeading) {
+        const label = pageHasHeading ? `Page ${pageNum} — Suite` : `Page ${pageNum} — Extrait`;
+        outputBlocks.push(`### ${label}\n${pageParagraphs.join('\n\n')}`);
       } else {
         outputBlocks.push(pageParagraphs.join('\n\n'));
       }
